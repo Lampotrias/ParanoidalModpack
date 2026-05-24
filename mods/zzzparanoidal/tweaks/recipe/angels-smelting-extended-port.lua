@@ -76,6 +76,113 @@ migrate_alloys_subgroup(data.raw.recipe)
 migrate_alloys_subgroup(data.raw.fluid)
 
 -- =============================================================================
+-- 0b. ALLOY-MIXING (angelsextended-remelting-fixed): subgroup + tier rebalance
+-- =============================================================================
+-- Recipes molten-X-alloy-mixing* живут в собственных subgroup'ах
+-- aragas-X-alloy-mixing → визуально отрываются от своих металлов. Переносим
+-- в angels-<metal>-casting на хвост через "z[alloy-mixing]-N".
+for name, recipe in pairs(data.raw.recipe) do
+	local metal, suffix = name:match("^molten%-(.+)%-alloy%-mixing%-?(.*)$")
+	if metal then
+		recipe.subgroup = "angels-" .. metal .. "-casting"
+		recipe.order = "z[alloy-mixing]-" .. (suffix ~= "" and suffix or "1")
+	end
+end
+
+-- Steel rebalance: парность alloy-mixing ↔ native ingot-рецептов.
+--   native -4 (steel+cobalt+nickel, на steel-3) ↔ NEW *-cobalt-nickel
+--   native -5 (steel+chrome+tungsten, на steel-4) ↔ *-alloy-mixing-4 (был на steel-3)
+-- Default remelting-fixed ставил alloy-mixing-4 на steel-3 (нет ingot-аналога
+-- с chrome+tungsten на этом тире) + для cobalt+nickel вообще не было пары.
+-- Alloy-mixer имеет 3 fluid input → cobalt идёт как powder (паттерн как у -4
+-- с tungsten powder), nickel остаётся fluid'ом.
+table.insert(recipes, {
+	type = "recipe",
+	name = "molten-steel-alloy-mixing-cobalt-nickel",
+	category = "molten-alloy-mixing",
+	subgroup = "angels-steel-casting",
+	order = "z[alloy-mixing]-3-cobalt",
+	enabled = false,
+	energy_required = 4,
+	ingredients = {
+		{ type = "fluid", name = "angels-liquid-molten-iron", amount = 240 },
+		{ type = "fluid", name = "angels-liquid-molten-nickel", amount = 120 },
+		{ type = "fluid", name = "angels-gas-oxygen", amount = 60 },
+		{ type = "item", name = "angels-powder-cobalt", amount = 12 },
+	},
+	results = { { type = "fluid", name = "angels-liquid-molten-steel", amount = 440 } },
+	icons = {
+		{ icon = "__angelssmeltinggraphics__/graphics/icons/molten-steel.png" },
+		{
+			icon = "__angelsextended-remelting-fixed__/graphics/icons/remelting.png",
+			tint = { r = 0.8, g = 0.8, b = 0.8, a = 0.5 },
+			scale = 0.32,
+			shift = { -12, -12 },
+		},
+	},
+	icon_size = 64,
+})
+
+do
+	local OV = angelsmods.functions.OV
+	OV.remove_unlock("angels-steel-smelting-3", "molten-steel-alloy-mixing-4")
+	OV.add_unlock("angels-steel-smelting-4", "molten-steel-alloy-mixing-4")
+	OV.add_unlock("angels-steel-smelting-3", "molten-steel-alloy-mixing-cobalt-nickel")
+end
+
+-- Alloy-mixer tiers: default — все 4 mixer'а с одной категорией molten-alloy-
+-- mixing → MK1 и MK4 craftят то же самое, тиры теряют смысл. Делаем как у
+-- angels-induction-furnace: per-tier категории + cumulative по тиру здания.
+-- Сами категории определены в prototypes/recipe-category/alloy-mixing-tiers.lua
+-- (требуют data-stage). Здесь только привязка к зданиям и recipe-categorization.
+data.raw["assembling-machine"]["alloy-mixer"].crafting_categories = {
+	"molten-alloy-mixing",
+}
+data.raw["assembling-machine"]["alloy-mixer-2"].crafting_categories = {
+	"molten-alloy-mixing", "molten-alloy-mixing-2",
+}
+data.raw["assembling-machine"]["alloy-mixer-3"].crafting_categories = {
+	"molten-alloy-mixing", "molten-alloy-mixing-2", "molten-alloy-mixing-3",
+}
+data.raw["assembling-machine"]["alloy-mixer-4"].crafting_categories = {
+	"molten-alloy-mixing", "molten-alloy-mixing-2", "molten-alloy-mixing-3", "molten-alloy-mixing-4",
+}
+
+-- Steel уникален: alloy-mixing-3 (manganese) на steel-smelting-2 → T2.
+-- Остальные металлы: -N на smelting-N → mixer T-N.
+local recipe_tier_overrides = {
+	["molten-steel-alloy-mixing-2"] = "molten-alloy-mixing-2",
+	["molten-steel-alloy-mixing-3"] = "molten-alloy-mixing-2",
+	["molten-steel-alloy-mixing-cobalt-nickel"] = "molten-alloy-mixing-3",
+	["molten-steel-alloy-mixing-4"] = "molten-alloy-mixing-4",
+	["molten-bronze-alloy-mixing-2"] = "molten-alloy-mixing-2",
+	["molten-bronze-alloy-mixing-3"] = "molten-alloy-mixing-3",
+	["molten-brass-alloy-mixing-2"] = "molten-alloy-mixing-2",
+	["molten-brass-alloy-mixing-3"] = "molten-alloy-mixing-3",
+	["molten-solder-alloy-mixing-2"] = "molten-alloy-mixing-2",
+	["molten-solder-alloy-mixing-3"] = "molten-alloy-mixing-3",
+}
+for name, category in pairs(recipe_tier_overrides) do
+	if data.raw.recipe[name] then
+		data.raw.recipe[name].category = category
+	end
+end
+
+-- Build cost: tier-N alloy-mixer требует 2× tier-(N-1) (default было 1×).
+for _, m in ipairs({
+	{ recipe = "alloy-mixer-2", prev = "alloy-mixer" },
+	{ recipe = "alloy-mixer-3", prev = "alloy-mixer-2" },
+	{ recipe = "alloy-mixer-4", prev = "alloy-mixer-3" },
+}) do
+	local r = data.raw.recipe[m.recipe]
+	if r and r.ingredients then
+		for _, ing in ipairs(r.ingredients) do
+			if ing.name == m.prev then ing.amount = 2 end
+		end
+	end
+end
+
+-- =============================================================================
 -- 1. PIPE CASTING (литъё труб из расплавов)
 -- =============================================================================
 -- В 1.1 шло через mod angels-smelting-extended/prototypes/recipes/ironworks.lua.
